@@ -37,6 +37,14 @@ export function chooseOption(sessionId, choiceId) {
   });
 }
 
+export function generateSceneImage(payload, options = {}) {
+  return request("/api/story/scene-image", {
+    ...options,
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getStory(sessionId) {
   return request(`/api/story/${sessionId}`);
 }
