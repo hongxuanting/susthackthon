@@ -10,6 +10,11 @@ class WorldGenerateRequest(BaseModel):
     style_mode: Optional[StrictStr] = "classic"
 
 
+class SceneImageRequest(BaseModel):
+    scene_text: StrictStr
+    style_mode: Optional[StrictStr] = "classic"
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

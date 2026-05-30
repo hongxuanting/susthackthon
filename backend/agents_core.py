@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -11,32 +12,35 @@ from schemas import EndingOut, FlagDelta, OpeningOut, Option, OptionsOut, PlanOu
 
 load_dotenv()
 
-API_KEY = os.getenv("OPENAI_API_KEY", "")
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
-BASE_URL = (os.getenv("OPENAI_BASE_URL", "") or "").strip()
+TEXT_API_KEY = os.getenv("OPENAI_API_KEY", "")
+TEXT_BASE_URL = (os.getenv("OPENAI_BASE_URL", "") or "").strip()
+TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini"
+IMAGE_API_KEY = os.getenv("OPENAI_IMAGE_API_KEY", "") or TEXT_API_KEY
+IMAGE_BASE_URL = (os.getenv("OPENAI_IMAGE_BASE_URL", "") or "").strip() or TEXT_BASE_URL
+IMAGE_MODEL = (os.getenv("OPENAI_IMAGE_MODEL", "") or "").strip() or "gpt-image-1"
 MOCK_AI = (os.getenv("MOCK_AI", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
-IMAGE_API_KEY = os.getenv("OPENAI_IMAGE_API_KEY", "") or API_KEY
-IMAGE_BASE_URL = (os.getenv("OPENAI_IMAGE_BASE_URL", "") or BASE_URL).strip()
-IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
-try:
-    IMAGE_TIMEOUT_SECONDS = int(os.getenv("IMAGE_TIMEOUT_SECONDS", "60") or "60")
-except ValueError:
-    IMAGE_TIMEOUT_SECONDS = 60
 
-if MOCK_AI:
-    client = None
-elif BASE_URL:
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-else:
-    client = OpenAI(api_key=API_KEY)
 
-if IMAGE_API_KEY:
-    if IMAGE_BASE_URL:
-        image_client = OpenAI(api_key=IMAGE_API_KEY, base_url=IMAGE_BASE_URL, timeout=IMAGE_TIMEOUT_SECONDS)
-    else:
-        image_client = OpenAI(api_key=IMAGE_API_KEY, timeout=IMAGE_TIMEOUT_SECONDS)
-else:
-    image_client = None
+def _read_image_timeout() -> float:
+    try:
+        return max(1.0, float(os.getenv("IMAGE_TIMEOUT_SECONDS", "60") or 60))
+    except ValueError:
+        return 60.0
+
+
+IMAGE_TIMEOUT_SECONDS = _read_image_timeout()
+
+
+def _create_openai_client(api_key: str, base_url: str, max_retries: int | None = None) -> OpenAI:
+    params = {"api_key": api_key}
+    if base_url:
+        params["base_url"] = base_url
+    if max_retries is not None:
+        params["max_retries"] = max_retries
+    return OpenAI(**params)
+
+
+text_client = None if MOCK_AI else _create_openai_client(TEXT_API_KEY, TEXT_BASE_URL)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -48,7 +52,6 @@ _DEFAULT_OPTIONS = {
     "C": {"text": "救下眼前的人", "style": "kind", "effects": {"kindness": 1, "truth": 1}},
     "D": {"text": "赌一把大的", "style": "ambitious", "effects": {"ambition": 1, "chaos": 1}},
 }
-
 
 def strip_inline_options(question: str) -> str:
     """Remove accidental inline A/B/C/D choices from a question."""
@@ -65,56 +68,106 @@ def _truncate_text(text: str, max_length: int) -> str:
     return cleaned[:max_length]
 
 
-def _first_chinese_chars(text: str, max_length: int = 10) -> str:
-    chars = re.findall(r"[\u4e00-\u9fff]", text or "")
-    return "".join(chars[:max_length])
-
-
-def _extract_image_prompt(scene_text: str) -> str:
-    cleaned = re.sub(r"\s+", "", scene_text or "")
-    if not cleaned:
+def _extract_generated_image_url(response: Any) -> str:
+    if not response.data:
         return ""
 
-    stop_words = [
-        "你正在",
-        "你站在",
-        "你躲在",
-        "你推开",
-        "你走进",
-        "你看见",
-        "你听见",
-        "你发现",
-        "你",
-        "正在",
-        "后面",
-        "前面",
-        "门口",
-        "观察",
-        "动静",
-        "开始",
-        "远处",
-        "眼前",
-        "一个",
-        "一座",
-        "一间",
-        "一条",
-        "一片",
-        "的",
-        "了",
-        "着",
-        "在",
-        "有",
-        "和",
-    ]
-    candidate = cleaned
-    for word in stop_words:
-        candidate = candidate.replace(word, "")
+    image = response.data[0]
+    image_url = getattr(image, "url", None)
+    image_base64 = getattr(image, "b64_json", None)
+    if isinstance(image, dict):
+        image_url = image_url or image.get("url")
+        image_base64 = image_base64 or image.get("b64_json")
 
-    candidate = "".join(re.findall(r"[\u4e00-\u9fff]", candidate))
-    if len(candidate) >= 4:
-        return candidate[:10]
+    if image_url:
+        return image_url
+    if image_base64:
+        return f"data:image/png;base64,{image_base64}"
+    return ""
 
-    return _first_chinese_chars(scene_text, 10)
+
+def _image_prompt(scene_text: str, style_mode: str) -> str:
+    chars = re.findall(r"[\u4e00-\u9fff]", scene_text or "")
+    if chars:
+        return "".join(chars[:10])
+    return _truncate_text(scene_text, 10)
+
+
+def _is_retryable_image_error(error: Exception) -> bool:
+    error_name = type(error).__name__
+    error_text = str(error)
+    retry_markers = (
+        "APIConnectionError",
+        "Connection error",
+        "timeout",
+        "Request timed out",
+    )
+    combined = f"{error_name}: {error_text}"
+    return any(marker.lower() in combined.lower() for marker in retry_markers)
+
+
+async def image_agent(scene_text: str, style_mode: str = "classic") -> Dict[str, Any]:
+    prompt = _image_prompt(scene_text, style_mode)
+    print("[image_agent] scene_text:", scene_text)
+    print("[image_agent] 10_char_prompt:", prompt)
+    last_error: Exception | None = None
+    image_client = _create_openai_client(IMAGE_API_KEY, IMAGE_BASE_URL, max_retries=0)
+
+    for attempt in range(1, 4):
+        try:
+            response = await asyncio.to_thread(
+                image_client.images.generate,
+                model=IMAGE_MODEL,
+                prompt=prompt,
+                n=1,
+                size="1024x1024",
+                timeout=IMAGE_TIMEOUT_SECONDS,
+            )
+            image_url = _extract_generated_image_url(response)
+            if not image_url:
+                raise RuntimeError("image response has no usable image")
+            print(
+                "[image_agent] result:",
+                {
+                    "success": True,
+                    "image_url_length": len(image_url),
+                    "debug_message": "",
+                },
+            )
+            return {
+                "success": True,
+                "image_url": image_url,
+                "debug_message": "",
+            }
+        except Exception as e:
+            last_error = e
+            print("[image_agent] attempt", attempt, "failed:", repr(e))
+            if attempt >= 3 or not _is_retryable_image_error(e):
+                print("[image_agent] model:", IMAGE_MODEL)
+                print("[image_agent] base_url:", IMAGE_BASE_URL)
+                print("[image_agent] prompt:", prompt)
+                print("[image_agent] error:", repr(e))
+                print(
+                    "[image_agent] result:",
+                    {
+                        "success": False,
+                        "image_url_length": 0,
+                        "debug_message": f"{type(e).__name__}: {e}",
+                    },
+                )
+                return {
+                    "success": False,
+                    "image_url": "",
+                    "debug_message": f"{type(e).__name__}: {e}",
+                }
+            await asyncio.sleep(2)
+
+    debug_message = f"{type(last_error).__name__}: {last_error}" if last_error else "Unknown image generation error"
+    return {
+        "success": False,
+        "image_url": "",
+        "debug_message": debug_message,
+    }
 
 
 def _normalize_world(data: WorldOut) -> WorldOut:
@@ -323,7 +376,7 @@ def _chat_structured(output_model: Type[T], system_prompt: str, user_prompt: str
     for attempt in range(2):
         try:
             params = {
-                "model": MODEL,
+                "model": TEXT_MODEL,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -333,7 +386,7 @@ def _chat_structured(output_model: Type[T], system_prompt: str, user_prompt: str
             if attempt == 0:
                 params["response_format"] = {"type": "json_object"}
 
-            response = client.chat.completions.create(**params)
+            response = text_client.chat.completions.create(**params)
             raw_content = _extract_text(response)
             data = extract_json(raw_content)
             return output_model.model_validate(data)

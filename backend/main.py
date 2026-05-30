@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from agents_core import ending_agent, image_agent, opening_agent, option_agent, planner_agent, transition_agent, world_agent
-from schemas import WorldGenerateRequest
+from schemas import SceneImageRequest, WorldGenerateRequest
 from store import delete_session, get_session, save_session
 
 app = FastAPI(title="WorldForge Agent Game API")
@@ -145,9 +145,13 @@ async def init_story(payload: InitInput):
 
 
 @app.post("/api/story/scene-image")
-async def scene_image(payload: SceneImageInput):
+async def generate_scene_image(payload: SceneImageRequest):
+    scene = payload.scene_text.strip()
+    if not scene:
+        raise HTTPException(status_code=400, detail="scene_text is required")
+
     style_mode = normalize_style_mode(payload.style_mode)
-    return await image_agent(payload.scene_text, style_mode)
+    return await image_agent(scene_text=scene, style_mode=style_mode)
 
 
 @app.post("/api/story/choose")

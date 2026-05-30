@@ -37,25 +37,11 @@ export function chooseOption(sessionId, choiceId) {
   });
 }
 
-export async function generateSceneImage(sceneText, styleMode) {
-  const res = await fetch(`${API_BASE}/api/story/scene-image`, {
+export function generateSceneImage(sceneText, styleMode = "classic") {
+  return request("/api/story/scene-image", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      scene_text: sceneText,
-      style_mode: styleMode,
-    }),
+    body: JSON.stringify({ scene_text: sceneText, style_mode: styleMode }),
   });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(data?.debug_message || "scene image generation failed");
-  }
-
-  return data;
 }
 
 export function getStory(sessionId) {
