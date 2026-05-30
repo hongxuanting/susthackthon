@@ -15,6 +15,13 @@ API_KEY = os.getenv("OPENAI_API_KEY", "")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")
 BASE_URL = (os.getenv("OPENAI_BASE_URL", "") or "").strip()
 MOCK_AI = (os.getenv("MOCK_AI", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
+IMAGE_API_KEY = os.getenv("OPENAI_IMAGE_API_KEY", "") or API_KEY
+IMAGE_BASE_URL = (os.getenv("OPENAI_IMAGE_BASE_URL", "") or BASE_URL).strip()
+IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+try:
+    IMAGE_TIMEOUT_SECONDS = int(os.getenv("IMAGE_TIMEOUT_SECONDS", "60") or "60")
+except ValueError:
+    IMAGE_TIMEOUT_SECONDS = 60
 
 if MOCK_AI:
     client = None
@@ -22,6 +29,14 @@ elif BASE_URL:
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 else:
     client = OpenAI(api_key=API_KEY)
+
+if IMAGE_API_KEY:
+    if IMAGE_BASE_URL:
+        image_client = OpenAI(api_key=IMAGE_API_KEY, base_url=IMAGE_BASE_URL, timeout=IMAGE_TIMEOUT_SECONDS)
+    else:
+        image_client = OpenAI(api_key=IMAGE_API_KEY, timeout=IMAGE_TIMEOUT_SECONDS)
+else:
+    image_client = None
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -48,6 +63,58 @@ def strip_inline_options(question: str) -> str:
 def _truncate_text(text: str, max_length: int) -> str:
     cleaned = re.sub(r"\s+", " ", text or "").strip()
     return cleaned[:max_length]
+
+
+def _first_chinese_chars(text: str, max_length: int = 10) -> str:
+    chars = re.findall(r"[\u4e00-\u9fff]", text or "")
+    return "".join(chars[:max_length])
+
+
+def _extract_image_prompt(scene_text: str) -> str:
+    cleaned = re.sub(r"\s+", "", scene_text or "")
+    if not cleaned:
+        return ""
+
+    stop_words = [
+        "你正在",
+        "你站在",
+        "你躲在",
+        "你推开",
+        "你走进",
+        "你看见",
+        "你听见",
+        "你发现",
+        "你",
+        "正在",
+        "后面",
+        "前面",
+        "门口",
+        "观察",
+        "动静",
+        "开始",
+        "远处",
+        "眼前",
+        "一个",
+        "一座",
+        "一间",
+        "一条",
+        "一片",
+        "的",
+        "了",
+        "着",
+        "在",
+        "有",
+        "和",
+    ]
+    candidate = cleaned
+    for word in stop_words:
+        candidate = candidate.replace(word, "")
+
+    candidate = "".join(re.findall(r"[\u4e00-\u9fff]", candidate))
+    if len(candidate) >= 4:
+        return candidate[:10]
+
+    return _first_chinese_chars(scene_text, 10)
 
 
 def _normalize_world(data: WorldOut) -> WorldOut:
@@ -313,6 +380,56 @@ async def world_agent(world_input: str, style_mode: str = "classic") -> WorldOut
     )
     data = _chat_structured(WorldOut, system_prompt, user_prompt)
     return _normalize_world(data)
+
+
+async def image_agent(scene_text: str, style_mode: str = "classic") -> dict:
+    image_prompt = _extract_image_prompt(scene_text)
+    if not image_prompt:
+        image_prompt = _truncate_text(scene_text, 10)
+
+    try:
+        if not image_client:
+            raise RuntimeError("image api key is missing")
+
+        response = image_client.images.generate(
+            model=IMAGE_MODEL,
+            prompt=image_prompt,
+            n=1,
+        )
+        item = response.data[0] if getattr(response, "data", None) else None
+        if item is None:
+            raise RuntimeError("image model returned no data")
+
+        image_url = ""
+        if isinstance(item, dict):
+            image_url = item.get("url") or ""
+            b64_json = item.get("b64_json") or ""
+        else:
+            image_url = getattr(item, "url", "") or ""
+            b64_json = getattr(item, "b64_json", "") or ""
+
+        if b64_json:
+            image_url = f"data:image/png;base64,{b64_json}"
+
+        if not image_url:
+            raise RuntimeError("image model returned empty image")
+
+        return {
+            "success": True,
+            "image_url": image_url,
+            "debug_message": "",
+        }
+    except Exception as e:
+        print("[image_agent] model:", IMAGE_MODEL)
+        print("[image_agent] base_url:", IMAGE_BASE_URL)
+        print("[image_agent] scene_text:", scene_text)
+        print("[image_agent] image_prompt:", image_prompt)
+        print("[image_agent] error:", repr(e))
+        return {
+            "success": False,
+            "image_url": "",
+            "debug_message": str(e),
+        }
 
 
 async def planner_agent(world_background: str, world_rules: List[str], style_mode: str = "classic") -> PlanOut:

@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from agents_core import ending_agent, opening_agent, option_agent, planner_agent, transition_agent, world_agent
+from agents_core import ending_agent, image_agent, opening_agent, option_agent, planner_agent, transition_agent, world_agent
 from schemas import WorldGenerateRequest
 from store import delete_session, get_session, save_session
 
@@ -33,6 +33,11 @@ class ChoiceInput(BaseModel):
 
 class RestartInput(BaseModel):
     session_id: str
+
+
+class SceneImageInput(BaseModel):
+    scene_text: str
+    style_mode: str = "classic"
 
 
 def get_phase(turn_count):
@@ -137,6 +142,12 @@ async def init_story(payload: InitInput):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"story_init error: {str(e)}")
+
+
+@app.post("/api/story/scene-image")
+async def scene_image(payload: SceneImageInput):
+    style_mode = normalize_style_mode(payload.style_mode)
+    return await image_agent(payload.scene_text, style_mode)
 
 
 @app.post("/api/story/choose")
