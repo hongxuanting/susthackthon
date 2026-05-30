@@ -11,10 +11,8 @@ class WorldGenerateRequest(BaseModel):
 
 
 class SceneImageRequest(BaseModel):
-    scene: StrictStr
+    scene_text: StrictStr
     style_mode: Optional[StrictStr] = "classic"
-    player_identity: Optional[StrictStr] = None
-    world_background: Optional[StrictStr] = None
 
 
 class StrictModel(BaseModel):

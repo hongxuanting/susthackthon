@@ -7,101 +7,85 @@ const STYLE_LABELS = {
   chaos: "崩化搞笑版",
 };
 
-const SOURCE_LABELS = {
-  generated: "AI剧情配图",
-  fallback: "备用剧情图",
-};
-
-const IMAGE_REQUEST_TIMEOUT_MS = 10000;
-const FALLBACK_SCENE_IMAGE = "/story-fallback.png";
-
 export default function Game({ gameData, onChoose, error }) {
   const [loadingChoice, setLoadingChoice] = useState("");
-  const [sceneImage, setSceneImage] = useState({
-    imageUrl: "",
-    source: "",
-    sceneSummary: "",
-    visualKeywords: [],
-  });
+  const [sceneImage, setSceneImage] = useState("");
   const [imageLoading, setImageLoading] = useState(false);
-  const imageCache = useRef(new Map());
-  const pendingImages = useRef(new Map());
+  const [imageError, setImageError] = useState("");
+  const imageCacheRef = useRef(new Map());
+  const inFlightRef = useRef(new Set());
+  const latestImageKeyRef = useRef("");
 
   useEffect(() => {
-    const scene = gameData.scene?.trim();
-    if (!scene) return undefined;
+    const currentScene = gameData.scene?.trim();
+    const styleMode = gameData.style_mode || "classic";
+    if (!currentScene) return undefined;
 
-    const sceneKey = `${gameData.style_mode || "classic"}::${scene}`;
-    const payload = {
-      scene,
-      style_mode: gameData.style_mode,
-      player_identity: gameData.player_profile?.identity || "",
-    };
-    const cachedImage = imageCache.current.get(sceneKey);
-    if (cachedImage) {
-      setSceneImage(cachedImage);
+    const imageKey = `${styleMode}::${currentScene}`;
+    latestImageKeyRef.current = imageKey;
+
+    if (imageCacheRef.current.has(imageKey)) {
+      setSceneImage(imageCacheRef.current.get(imageKey));
+      setImageError("");
       setImageLoading(false);
       return undefined;
     }
 
-    let imageRequest = pendingImages.current.get(sceneKey);
-    if (!imageRequest) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), IMAGE_REQUEST_TIMEOUT_MS);
-      imageRequest = generateSceneImage(payload, { signal: controller.signal })
-        .then((data) => {
-          if (data.debug_message) {
-            console.log("[scene-image]", data.debug_message);
-          }
-          const imageUrl = data.image_url;
-          if (!imageUrl) throw new Error("scene image generation returned no image");
-          return {
-            imageUrl,
-            source: data.source,
-            sceneSummary: data.scene_summary || "",
-            visualKeywords: data.visual_keywords || [],
-          };
-        })
-        .catch((imageError) => {
-          console.log("[scene-image] request failed, using fallback illustration", imageError);
-          return {
-            imageUrl: FALLBACK_SCENE_IMAGE,
-            source: "fallback",
-            sceneSummary: "",
-            visualKeywords: [],
-          };
-        })
-        .then((image) => {
-          imageCache.current.set(sceneKey, image);
-          return image;
-        })
-        .finally(() => {
-          clearTimeout(timeoutId);
-          pendingImages.current.delete(sceneKey);
-        });
-      pendingImages.current.set(sceneKey, imageRequest);
+    if (inFlightRef.current.has(imageKey)) {
+      return undefined;
     }
 
-    let ignore = false;
-    setSceneImage({ imageUrl: "", source: "", sceneSummary: "", visualKeywords: [] });
+    inFlightRef.current.add(imageKey);
+    setSceneImage("");
+    setImageError("");
     setImageLoading(true);
+    console.log("request scene image:", imageKey);
 
-    imageRequest
-      .then((image) => {
-        if (ignore) return;
-        setSceneImage(image);
+    generateSceneImage(currentScene, styleMode)
+      .then((data) => {
+        if (latestImageKeyRef.current !== imageKey) return;
+        console.log("scene image result", {
+          success: data.success,
+          hasImage: !!data.image_url,
+          imageType: data.image_url?.startsWith("data:image") ? "base64" : "url",
+          imageLength: data.image_url?.length,
+          debug_message: data.debug_message,
+        });
+        if (data.success === true && data.image_url) {
+          imageCacheRef.current.set(imageKey, data.image_url);
+          setSceneImage(data.image_url);
+          setImageError("");
+        } else {
+          console.warn("scene image failed:", {
+            success: data.success,
+            hasImage: !!data.image_url,
+            imageType: data.image_url?.startsWith("data:image") ? "base64" : "url",
+            imageLength: data.image_url?.length,
+            debug_message: data.debug_message,
+          });
+          if (!imageCacheRef.current.has(imageKey)) {
+            setImageError("本幕配图生成失败");
+          }
+        }
+      })
+      .catch((err) => {
+        if (latestImageKeyRef.current !== imageKey) return;
+        console.warn("scene image failed:", err);
+        if (!imageCacheRef.current.has(imageKey)) {
+          setImageError("本幕配图生成失败");
+        }
       })
       .finally(() => {
-        if (!ignore) setImageLoading(false);
+        inFlightRef.current.delete(imageKey);
+        if (latestImageKeyRef.current === imageKey) {
+          setImageLoading(false);
+        }
       });
 
-    return () => {
-      ignore = true;
-    };
+    return undefined;
   }, [
     gameData.scene,
     gameData.style_mode,
-    gameData.player_profile?.identity,
   ]);
 
   const handleChoose = async (choiceId) => {
@@ -113,22 +97,6 @@ export default function Game({ gameData, onChoose, error }) {
     }
   };
 
-  const handleImageError = () => {
-    const scene = gameData.scene?.trim() || sceneImage.sceneSummary;
-    if (sceneImage.imageUrl !== FALLBACK_SCENE_IMAGE) {
-      const fallbackImage = {
-        imageUrl: FALLBACK_SCENE_IMAGE,
-        source: "fallback",
-        sceneSummary: sceneImage.sceneSummary,
-        visualKeywords: sceneImage.visualKeywords,
-      };
-      if (scene) {
-        imageCache.current.set(`${gameData.style_mode || "classic"}::${scene}`, fallbackImage);
-      }
-      setSceneImage(fallbackImage);
-    }
-  };
-
   return (
     <section className="card">
       <h1>WorldForge AI</h1>
@@ -136,35 +104,32 @@ export default function Game({ gameData, onChoose, error }) {
         <div><dt>当前模式</dt><dd>{STYLE_LABELS[gameData.style_mode]}</dd></div>
         <div><dt>玩家身份</dt><dd>{gameData.player_profile?.identity}</dd></div>
       </dl>
-      <section className="scene-image-wrap" aria-live="polite">
-        <div className="scene-image-heading">
-          <h2>当前画面</h2>
-          {!imageLoading && sceneImage.source && <small>{SOURCE_LABELS[sceneImage.source]}</small>}
-        </div>
-        <div className={`scene-image-box${imageLoading ? " is-loading" : ""}`}>
-          {sceneImage.imageUrl && (
-            <img
-              className="scene-image"
-              src={sceneImage.imageUrl}
-              alt="当前剧情场景插画"
-              onError={handleImageError}
-            />
-          )}
-          {imageLoading && (
-            <div className="scene-image-loading">
-              <span />
-              <p>AI 正在生成这一幕……</p>
-            </div>
-          )}
-        </div>
-        {sceneImage.sceneSummary && (
-          <p className="scene-image-title">本幕标题：{sceneImage.sceneSummary}</p>
-        )}
-      </section>
       <article>
         <h2>当前剧情</h2>
         <p>{gameData.scene}</p>
       </article>
+      <section className="scene-image-panel" aria-live="polite">
+        {imageLoading && !sceneImage && (
+          <p className="scene-image-status">AI 正在生成本幕配图...</p>
+        )}
+        {sceneImage && (
+          <img
+            className="scene-image"
+            src={sceneImage}
+            alt="本幕配图"
+            onError={() => {
+              console.error("image load failed:", {
+                imageType: sceneImage?.startsWith("data:image") ? "base64" : "url",
+                imageLength: sceneImage?.length,
+              });
+              setImageError("图片加载失败");
+            }}
+          />
+        )}
+        {!sceneImage && imageError && (
+          <p className="scene-image-status">{imageError}</p>
+        )}
+      </section>
       <article>
         <h2>当前问题</h2>
         <p>{gameData.question}</p>

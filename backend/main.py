@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from agents_core import ending_agent, generate_fallback_scene_image_result, opening_agent, option_agent, planner_agent, scene_image_agent, transition_agent, world_agent
+from agents_core import ending_agent, image_agent, opening_agent, option_agent, planner_agent, transition_agent, world_agent
 from schemas import SceneImageRequest, WorldGenerateRequest
 from store import delete_session, get_session, save_session
 
@@ -141,24 +141,12 @@ async def init_story(payload: InitInput):
 
 @app.post("/api/story/scene-image")
 async def generate_scene_image(payload: SceneImageRequest):
-    scene = payload.scene.strip()
+    scene = payload.scene_text.strip()
     if not scene:
-        raise HTTPException(status_code=400, detail="scene is required")
+        raise HTTPException(status_code=400, detail="scene_text is required")
 
     style_mode = normalize_style_mode(payload.style_mode)
-    try:
-        return await scene_image_agent(
-            scene=scene,
-            style_mode=style_mode,
-            player_identity=(payload.player_identity or "").strip(),
-        )
-    except Exception as e:
-        print("[scene-image] unexpected failure:", repr(e))
-        return generate_fallback_scene_image_result(
-            scene,
-            style_mode,
-            f"scene image agent failed: {type(e).__name__}: {e}; using static fallback illustration",
-        )
+    return await image_agent(scene_text=scene, style_mode=style_mode)
 
 
 @app.post("/api/story/choose")

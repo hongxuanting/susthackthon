@@ -37,11 +37,10 @@ export function chooseOption(sessionId, choiceId) {
   });
 }
 
-export function generateSceneImage(payload, options = {}) {
+export function generateSceneImage(sceneText, styleMode = "classic") {
   return request("/api/story/scene-image", {
-    ...options,
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ scene_text: sceneText, style_mode: styleMode }),
   });
 }
 

@@ -130,73 +130,26 @@ button:disabled {
   margin: 0;
 }
 
-.scene-image-wrap {
+.scene-image-panel {
   display: grid;
-  gap: 8px;
-}
-
-.scene-image-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.scene-image-heading small {
-  color: #93c5fd;
-}
-
-.scene-image-box {
-  position: relative;
-  display: grid;
-  width: 100%;
-  max-width: 720px;
-  height: 360px;
+  min-height: 120px;
   place-items: center;
-  overflow: hidden;
-  border-radius: 10px;
-  background: #111827 url("/story-fallback.png") center / cover no-repeat;
+  padding: 12px;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  background: #111827;
 }
 
 .scene-image {
-  position: relative;
-  z-index: 1;
   width: 100%;
-  height: 100%;
+  max-height: 360px;
+  border-radius: 8px;
   object-fit: cover;
 }
 
-.scene-image-loading {
-  position: absolute;
-  z-index: 2;
-  display: grid;
-  gap: 12px;
-  justify-items: center;
-  padding: 14px 18px;
-  border-radius: 10px;
-  color: #cbd5e1;
-  background: rgb(2 6 23 / 62%);
+.scene-image-status {
+  color: #93c5fd;
   font-size: 14px;
-  text-shadow: 0 1px 3px #020617;
-}
-
-.scene-image-loading span {
-  width: 34px;
-  height: 34px;
-  border: 3px solid rgb(255 255 255 / 24%);
-  border-top-color: #f8fafc;
-  border-radius: 50%;
-  animation: scene-image-spin 0.9s linear infinite;
-}
-
-.scene-image-title {
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-@keyframes scene-image-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .options {
@@ -233,7 +186,4 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .scene-image-box {
-    height: 260px;
-  }
 }

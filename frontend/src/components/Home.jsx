@@ -50,7 +50,7 @@ export default function Home({ onGenerated }) {
       <textarea
         value={worldInput}
         onChange={(event) => setWorldInput(event.target.value)}
-        placeholder="输入世界设定"
+        aria-label="输入世界设定"
       />
       <button type="button" onClick={handleGenerate} disabled={loading}>
         {loading ? "生成中..." : "生成世界"}
